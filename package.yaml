@@ -1,0 +1,19 @@
+name: mpv-sync
+author: doublescale
+maintainer: doublescale@tutanota.com
+
+dependencies:
+  - base
+  - aeson
+  - bytestring
+  - containers
+  - network
+  - optparse-applicative
+
+ghc-options:
+  - -Wall
+
+source-dirs: src
+
+executable:
+  main: Main.hs

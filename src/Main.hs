@@ -10,24 +10,38 @@ import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Types as JSON
 import qualified Data.ByteString.Char8 as BS
 import qualified Network.Socket as Sock
-import System.Environment
-import System.Exit
+import qualified Network.Simple.TCP as TCP
 import System.IO
+
+import qualified Options as Opts
 
 main :: IO ()
 main = do
-  args <- getArgs
-  case args of
-    [path] -> runWith path
-    _ -> do
-      putStrLn "I need a Unix socket."
-      exitFailure
+  o <- Opts.get
+  let connector = getConnector o
+  mpvHandle <- getSockHandle (Opts.sockPath o)
+  connector (runWith mpvHandle)
 
-runWith :: FilePath -> IO ()
-runWith p = do
-  h <- getSockHandle p
-  _ <- forkIO $ forever (BS.hPutStrLn h timeQuery >> threadDelay 1e6)
-  forever (mapM_ print . parseData =<< BS.hGetLine h)
+getConnector :: Opts.Options -> (Sock.Socket -> IO ()) -> IO ()
+getConnector o act = case Opts.opMode o of
+  Opts.Serve -> TCP.listen TCP.HostAny port (\(s,_) -> TCP.accept s (act . fst))
+  Opts.Connect host -> TCP.connect host port (act . fst)
+  where
+    port = show (Opts.port o)
+
+runWith :: Handle -> Sock.Socket -> IO ()
+runWith mpv s = do
+  tcp <- Sock.socketToHandle s ReadWriteMode
+  let
+    getFromThem = do
+      msg <- BS.hGetLine tcp
+      putStrLn ("Them: " ++ show msg)
+    tellThem msg = do
+      putStrLn ("Us: " ++ show msg)
+      BS.hPutStrLn tcp msg
+  _ <- forkIO $ forever getFromThem
+  _ <- forkIO $ forever (BS.hPutStrLn mpv timeQuery >> threadDelay 1e6)
+  forever (mapM_ (tellThem . BS.pack . show) . parseData =<< BS.hGetLine mpv)
 
 getSockHandle :: FilePath -> IO Handle
 getSockHandle p = do

@@ -8,6 +8,7 @@ dependencies:
   - bytestring
   - containers
   - network
+  - network-simple
   - optparse-applicative
 
 ghc-options:

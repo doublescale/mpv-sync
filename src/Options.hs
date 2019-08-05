@@ -20,9 +20,10 @@ data OpMode = Serve | Connect String
 
 parseOptions :: O.Parser Options
 parseOptions = do
-  sockPath <- O.strArgument (O.metavar "MPVSOCKET")
+  sockPath <- O.strArgument (O.metavar "MPVSOCKET"
+                             <> O.help "mpv's --input-ipc-server")
   port <- O.option O.auto (O.short 'p' <> O.long "port" <> O.metavar "PORT"
-                           <> O.help "Port to serve on / connect to")
+                           <> O.help "TCP port to serve on / connect to")
   opMode <- parseOpMode
   pure Options{..}
 

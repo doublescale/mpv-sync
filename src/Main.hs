@@ -20,28 +20,15 @@ main = do
   o <- Opts.get
   let connector = getConnector o
   mpvHandle <- getSockHandle (Opts.sockPath o)
-  connector (runWith mpvHandle)
+  connector (run mpvHandle)
 
-getConnector :: Opts.Options -> (Sock.Socket -> IO ()) -> IO ()
+getConnector :: Opts.Options -> (Handle -> IO ()) -> IO ()
 getConnector o act = case Opts.opMode o of
-  Opts.Serve -> TCP.listen TCP.HostAny port (\(s,_) -> TCP.accept s (act . fst))
-  Opts.Connect host -> TCP.connect host port (act . fst)
+  Opts.Serve -> TCP.listen TCP.HostAny port (\(s, _) -> TCP.accept s actor)
+  Opts.Connect host -> TCP.connect host port actor
   where
     port = show (Opts.port o)
-
-runWith :: Handle -> Sock.Socket -> IO ()
-runWith mpv s = do
-  tcp <- Sock.socketToHandle s ReadWriteMode
-  let
-    getFromThem = do
-      msg <- BS.hGetLine tcp
-      putStrLn ("Them: " ++ show msg)
-    tellThem msg = do
-      putStrLn ("Us: " ++ show msg)
-      BS.hPutStrLn tcp msg
-  _ <- forkIO $ forever getFromThem
-  _ <- forkIO $ forever (BS.hPutStrLn mpv timeQuery >> threadDelay 1e6)
-  forever (mapM_ (tellThem . BS.pack . show) . parseData =<< BS.hGetLine mpv)
+    actor (s, _) = act =<< Sock.socketToHandle s ReadWriteMode
 
 getSockHandle :: FilePath -> IO Handle
 getSockHandle p = do
@@ -49,8 +36,32 @@ getSockHandle p = do
   Sock.connect s (Sock.SockAddrUnix p)
   Sock.socketToHandle s ReadWriteMode
 
-timeQuery :: BS.ByteString
-timeQuery = "{\"command\": [\"get_property\", \"playback-time\"]}"
+-- TODO: Newtype wrappers around Handle
+run :: Handle -> Handle -> IO ()
+run mpv tcp = do
+  disableEvents mpv
+  _ <- forkIO $ forever getFromThem
+  forever (mapM_ (tellThem . BS.pack . show) =<< getPlayTime mpv <* pause)
+  where
+    getFromThem = do
+      msg <- BS.hGetLine tcp
+      putStrLn ("Them: " ++ show msg)
+    tellThem msg = do
+      putStrLn ("Us: " ++ show msg)
+      BS.hPutStrLn tcp msg
+    pause = threadDelay 1e6
 
-parseData :: BS.ByteString -> Maybe Double
-parseData = JSON.parseMaybe (.: "data") <=< JSON.decodeStrict'
+disableEvents :: Handle -> IO ()
+disableEvents h = do
+  BS.hPutStrLn h "{\"command\":[\"disable_event\",\"all\"]}"
+  waitForSuccess
+  where
+    waitForSuccess = do
+      json <- JSON.decodeStrict' <$> BS.hGetLine h
+      let errorValue = JSON.parseMaybe (.: "error") =<< json :: Maybe String
+      unless (errorValue == Just "success") waitForSuccess
+
+getPlayTime :: Handle -> IO (Maybe Double)
+getPlayTime h = do
+  BS.hPutStrLn h "{\"command\":[\"get_property\",\"playback-time\"]}"
+  (JSON.parseMaybe (.: "data") <=< JSON.decodeStrict') <$> BS.hGetLine h

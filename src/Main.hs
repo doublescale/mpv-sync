@@ -9,9 +9,13 @@ import Data.Aeson ((.:))
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Types as JSON
 import qualified Data.ByteString.Char8 as BS
+import Data.Fixed (divMod')
+import Data.IORef
 import qualified Network.Socket as Sock
 import qualified Network.Simple.TCP as TCP
 import System.IO
+import Text.Printf
+import Text.Read
 
 import qualified Options as Opts
 
@@ -40,16 +44,11 @@ getSockHandle p = do
 run :: Handle -> Handle -> IO ()
 run mpv tcp = do
   disableEvents mpv
-  _ <- forkIO $ forever getFromThem
-  forever (mapM_ (tellThem . BS.pack . show) =<< getPlayTime mpv <* pause)
-  where
-    getFromThem = do
-      msg <- BS.hGetLine tcp
-      putStrLn ("Them: " ++ show msg)
-    tellThem msg = do
-      putStrLn ("Us: " ++ show msg)
-      BS.hPutStrLn tcp msg
-    pause = threadDelay 1e6
+  theirRef <- commTcp tcp
+  ourRef <- commMpv mpv tcp
+  forever $ do
+    showTimes ourRef theirRef
+    threadDelay 0.5e6
 
 disableEvents :: Handle -> IO ()
 disableEvents h = do
@@ -61,7 +60,38 @@ disableEvents h = do
       let errorValue = JSON.parseMaybe (.: "error") =<< json :: Maybe String
       unless (errorValue == Just "success") waitForSuccess
 
+commTcp :: Handle -> IO (IORef (Maybe Double))
+commTcp tcp = do
+  ref <- newIORef Nothing
+  _ <- forkIO $ forever (getTime ref)
+  pure ref
+  where
+    getTime r = writeIORef r . readMaybe . BS.unpack =<< BS.hGetLine tcp
+
+commMpv :: Handle -> Handle -> IO (IORef (Maybe Double))
+commMpv mpv tcp = do
+  ref <- newIORef Nothing
+  _ <- forkIO $ forever (broadcastTime ref)
+  pure ref
+  where
+    broadcastTime r = do
+      time <- getPlayTime mpv
+      writeIORef r time
+      mapM_ (BS.hPutStrLn tcp . BS.pack . show) time
+      threadDelay 1e6
+
 getPlayTime :: Handle -> IO (Maybe Double)
 getPlayTime h = do
   BS.hPutStrLn h "{\"command\":[\"get_property\",\"playback-time\"]}"
   (JSON.parseMaybe (.: "data") <=< JSON.decodeStrict') <$> BS.hGetLine h
+
+showTimes :: IORef (Maybe Double) -> IORef (Maybe Double) -> IO ()
+showTimes ourRef theirRef = do
+  ours <- readIORef ourRef
+  theirs <- readIORef theirRef
+  printf "\rUs: %s  Them: %s" (render ours) (render theirs)
+  hFlush stdout
+  where
+    render Nothing = "--:--" :: String
+    render (Just t) = printf "%02d:%02.0f" (m :: Int) s
+      where (m, s) = divMod' (max 0 t) 60

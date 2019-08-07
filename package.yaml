@@ -1,4 +1,8 @@
 name: mpv-sync
+version: 0.1.0
+synopsis: Check mpv playtime of your buddy
+license: MIT
+license-file: LICENSE
 author: doublescale
 maintainer: doublescale@tutanota.com
 

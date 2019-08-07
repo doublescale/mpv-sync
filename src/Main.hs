@@ -95,7 +95,7 @@ showTimes ourRef theirRef = do
   hFlush stdout
   where
     renderTime Nothing = "--:--" :: String
-    renderTime (Just t) = printf "%02d:%02.0f" (m :: Int) s
+    renderTime (Just t) = printf "%02d:%02d" (m :: Int) (floor s :: Int)
       where (m, s) = divMod' (max 0 t) 60
     renderDiff Nothing = " ---" :: String
     renderDiff (Just d) = printf "%+4.0f" d

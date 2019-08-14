@@ -31,25 +31,24 @@ main = do
   fromMpvChan <- newChan
   fromTcpChan <- newChan
   toTcpChan <- newChan
-  _ <- forkIO $ retrying $ do
+  _ <- forkIO $ retrying (writeIORef ourState Nothing) $ do
     mpvHandle <- getSockHandle (Opts.sockPath o)
-    putStrLn "\n* Got mpv handle"
     disableEvents mpvHandle
     forever $ do
       time <- getPlayTime mpvHandle
       writeChan fromMpvChan time
       threadDelay 0.5e6
-  _ <- forkIO $ retrying (getConnector o $ \tcpHandle -> do
-    putStrLn "\n* Connected TCP"
+  _ <- forkIO $ retrying (writeIORef theirState Nothing)
+              $ getConnector o $ \tcpHandle -> do
     _ <- forkIO $ forever $
+      -- TODO: Check why this BS.hGetLine can show exception to stdout
       writeChan fromTcpChan . readMaybe . BS.unpack =<< BS.hGetLine tcpHandle
     forever $
       mapM_ (BS.hPutStrLn tcpHandle . BS.pack . show) =<< readChan toTcpChan
-    )
   _ <- forkIO $ forever $ do
     mpvMsg <- readChan fromMpvChan
     writeIORef ourState mpvMsg
-    writeChan toTcpChan mpvMsg
+    writeChan toTcpChan mpvMsg -- TODO: Send our IORef state regularly instead?
     -- TODO: Update semaphore for rendering?
   _ <- forkIO $ forever $ do
     tcpMsg <- readChan fromTcpChan
@@ -59,10 +58,10 @@ main = do
     join $ showPlayStates <$> readIORef ourState <*> readIORef theirState
     threadDelay 0.5e6 -- TODO: Replace by semaphore
 
-retrying :: IO () -> IO ()
-retrying act =
+retrying :: IO () -> IO () -> IO ()
+retrying onFailure act =
   forever $ do
-    act `catch` \(_ :: IOException) -> pure ()
+    act `catch` \(_ :: IOException) -> onFailure
     threadDelay 1e6
 
 getConnector :: Opts.Options -> (Handle -> IO ()) -> IO ()

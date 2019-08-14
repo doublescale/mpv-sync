@@ -31,7 +31,7 @@ main = do
   fromMpvChan <- newChan
   fromTcpChan <- newChan
   toTcpChan <- newChan
-  forkIO $ retrying $ do
+  _ <- forkIO $ retrying $ do
     mpvHandle <- getSockHandle (Opts.sockPath o)
     putStrLn "\n* Got mpv handle"
     disableEvents mpvHandle
@@ -39,20 +39,19 @@ main = do
       time <- getPlayTime mpvHandle
       writeChan fromMpvChan time
       threadDelay 0.5e6
-  let connector = getConnector o
-  forkIO $ retrying (getConnector o $ \tcpHandle -> do
+  _ <- forkIO $ retrying (getConnector o $ \tcpHandle -> do
     putStrLn "\n* Connected TCP"
-    forkIO $ forever $
+    _ <- forkIO $ forever $
       writeChan fromTcpChan . readMaybe . BS.unpack =<< BS.hGetLine tcpHandle
     forever $
       mapM_ (BS.hPutStrLn tcpHandle . BS.pack . show) =<< readChan toTcpChan
     )
-  forkIO $ forever $ do
+  _ <- forkIO $ forever $ do
     mpvMsg <- readChan fromMpvChan
     writeIORef ourState mpvMsg
     writeChan toTcpChan mpvMsg
     -- TODO: Update semaphore for rendering?
-  forkIO $ forever $ do
+  _ <- forkIO $ forever $ do
     tcpMsg <- readChan fromTcpChan
     writeIORef theirState tcpMsg
     -- TODO: Update semaphore for rendering?
@@ -60,9 +59,10 @@ main = do
     join $ showPlayStates <$> readIORef ourState <*> readIORef theirState
     threadDelay 0.5e6 -- TODO: Replace by semaphore
 
+retrying :: IO () -> IO ()
 retrying act =
   forever $ do
-    act `catch` \(e :: IOException) -> pure ()
+    act `catch` \(_ :: IOException) -> pure ()
     threadDelay 1e6
 
 getConnector :: Opts.Options -> (Handle -> IO ()) -> IO ()

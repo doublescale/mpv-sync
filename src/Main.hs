@@ -1,9 +1,11 @@
 {-# LANGUAGE NumDecimals #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
 import Control.Concurrent
+import Control.Exception
 import Control.Monad
 import Data.Aeson ((.:))
 import qualified Data.Aeson as JSON
@@ -19,12 +21,49 @@ import Text.Read
 
 import qualified Options as Opts
 
+type PlayState = Maybe Double
+
 main :: IO ()
 main = do
   o <- Opts.get
+  ourState <- newIORef Nothing
+  theirState <- newIORef Nothing
+  fromMpvChan <- newChan
+  fromTcpChan <- newChan
+  toTcpChan <- newChan
+  forkIO $ retrying $ do
+    mpvHandle <- getSockHandle (Opts.sockPath o)
+    putStrLn "\n* Got mpv handle"
+    disableEvents mpvHandle
+    forever $ do
+      time <- getPlayTime mpvHandle
+      writeChan fromMpvChan time
+      threadDelay 0.5e6
   let connector = getConnector o
-  mpvHandle <- getSockHandle (Opts.sockPath o)
-  connector (run mpvHandle)
+  forkIO $ retrying (getConnector o $ \tcpHandle -> do
+    putStrLn "\n* Connected TCP"
+    forkIO $ forever $
+      writeChan fromTcpChan . readMaybe . BS.unpack =<< BS.hGetLine tcpHandle
+    forever $
+      mapM_ (BS.hPutStrLn tcpHandle . BS.pack . show) =<< readChan toTcpChan
+    )
+  forkIO $ forever $ do
+    mpvMsg <- readChan fromMpvChan
+    writeIORef ourState mpvMsg
+    writeChan toTcpChan mpvMsg
+    -- TODO: Update semaphore for rendering?
+  forkIO $ forever $ do
+    tcpMsg <- readChan fromTcpChan
+    writeIORef theirState tcpMsg
+    -- TODO: Update semaphore for rendering?
+  forever $ do
+    join $ showPlayStates <$> readIORef ourState <*> readIORef theirState
+    threadDelay 0.5e6 -- TODO: Replace by semaphore
+
+retrying act =
+  forever $ do
+    act `catch` \(e :: IOException) -> pure ()
+    threadDelay 1e6
 
 getConnector :: Opts.Options -> (Handle -> IO ()) -> IO ()
 getConnector o act = case Opts.opMode o of
@@ -40,16 +79,6 @@ getSockHandle p = do
   Sock.connect s (Sock.SockAddrUnix p)
   Sock.socketToHandle s ReadWriteMode
 
--- TODO: Newtype wrappers around Handle
-run :: Handle -> Handle -> IO ()
-run mpv tcp = do
-  disableEvents mpv
-  theirRef <- commTcp tcp
-  ourRef <- commMpv mpv tcp
-  forever $ do
-    showTimes ourRef theirRef
-    threadDelay 0.5e6
-
 disableEvents :: Handle -> IO ()
 disableEvents h = do
   BS.hPutStrLn h "{\"command\":[\"disable_event\",\"all\"]}"
@@ -60,35 +89,13 @@ disableEvents h = do
       let errorValue = JSON.parseMaybe (.: "error") =<< json :: Maybe String
       unless (errorValue == Just "success") waitForSuccess
 
-commTcp :: Handle -> IO (IORef (Maybe Double))
-commTcp tcp = do
-  ref <- newIORef Nothing
-  _ <- forkIO $ forever (getTime ref)
-  pure ref
-  where
-    getTime r = writeIORef r . readMaybe . BS.unpack =<< BS.hGetLine tcp
-
-commMpv :: Handle -> Handle -> IO (IORef (Maybe Double))
-commMpv mpv tcp = do
-  ref <- newIORef Nothing
-  _ <- forkIO $ forever (broadcastTime ref)
-  pure ref
-  where
-    broadcastTime r = do
-      time <- getPlayTime mpv
-      writeIORef r time
-      mapM_ (BS.hPutStrLn tcp . BS.pack . show) time
-      threadDelay 1e6
-
 getPlayTime :: Handle -> IO (Maybe Double)
 getPlayTime h = do
   BS.hPutStrLn h "{\"command\":[\"get_property\",\"playback-time\"]}"
   (JSON.parseMaybe (.: "data") <=< JSON.decodeStrict') <$> BS.hGetLine h
 
-showTimes :: IORef (Maybe Double) -> IORef (Maybe Double) -> IO ()
-showTimes ourRef theirRef = do
-  ours <- readIORef ourRef
-  theirs <- readIORef theirRef
+showPlayStates :: PlayState -> PlayState -> IO ()
+showPlayStates ours theirs = do
   let diff = (-) <$> ours <*> theirs
   printf "\rUs: %s  Them: %s  Diff:%s  "
          (renderTime ours) (renderTime theirs) (renderDiff diff)
